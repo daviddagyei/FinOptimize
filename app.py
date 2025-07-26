@@ -1383,79 +1383,426 @@ def create_beta_analysis_chart(capm_data: dict) -> go.Figure:
         st.error(f"Error creating beta analysis chart: {str(e)}")
         return go.Figure()
 
+def create_security_market_line(capm_data: dict, rf_rate: float) -> go.Figure:
+    """
+    Create Security Market Line visualization for CAPM analysis.
+    
+    Parameters:
+    -----------
+    camp_data : dict
+        CAPM analysis results
+    rf_rate : float
+        Risk-free rate (annualized)
+    
+    Returns:
+    --------
+    go.Figure
+        Plotly figure with Security Market Line
+    """
+    try:
+        fig = go.Figure()
+        
+        if not capm_data or 'capm_results' not in capm_data:
+            return fig
+        
+        capm_results = capm_data['capm_results']
+        market_premium = capm_data.get('market_return_annual', 0) - rf_rate
+        
+        # Extract data for plotting
+        betas = []
+        expected_returns = []
+        actual_returns = []
+        asset_names = []
+        
+        for asset, results in capm_results.items():
+            betas.append(results['beta'])
+            expected_returns.append(results['expected_return_capm'])
+            actual_returns.append(results['actual_return'])
+            asset_names.append(asset)
+        
+        # Create Security Market Line (theoretical)
+        beta_range = np.linspace(0, max(betas + [1.5]), 100)
+        sml_returns = rf_rate + beta_range * market_premium
+        
+        # Add Security Market Line
+        fig.add_trace(go.Scatter(
+            x=beta_range,
+            y=sml_returns,
+            mode='lines',
+            name='Security Market Line (SML)',
+            line=dict(color='blue', width=3, dash='dash'),
+            hovertemplate='Beta: %{x:.2f}<br>Expected Return: %{y:.2%}<extra></extra>'
+        ))
+        
+        # Add market portfolio point (beta = 1)
+        fig.add_trace(go.Scatter(
+            x=[1.0],
+            y=[rf_rate + market_premium],
+            mode='markers',
+            name=f'Market ({capm_data.get("market_ticker", "Market")})',
+            marker=dict(size=15, color='red', symbol='diamond'),
+            hovertemplate=f'Market Portfolio<br>Beta: 1.00<br>Expected Return: {rf_rate + market_premium:.2%}<extra></extra>'
+        ))
+        
+        # Add risk-free asset point (beta = 0)
+        fig.add_trace(go.Scatter(
+            x=[0.0],
+            y=[rf_rate],
+            mode='markers',
+            name='Risk-Free Asset',
+            marker=dict(size=12, color='green', symbol='square'),
+            hovertemplate=f'Risk-Free Asset<br>Beta: 0.00<br>Return: {rf_rate:.2%}<extra></extra>'
+        ))
+        
+        # Add individual assets
+        colors = px.colors.qualitative.Set1
+        
+        for i, (asset, results) in enumerate(capm_results.items()):
+            beta = results['beta']
+            expected_ret = results['expected_return_capm']
+            actual_ret = results['actual_return']
+            alpha = results['jensen_alpha']
+            
+            # Determine position relative to SML
+            above_sml = actual_ret > expected_ret
+            
+            fig.add_trace(go.Scatter(
+                x=[beta],
+                y=[actual_ret],
+                mode='markers',
+                name=f'{asset}',
+                marker=dict(
+                    size=12,
+                    color=colors[i % len(colors)],
+                    symbol='circle',
+                    line=dict(width=2, color='black' if above_sml else 'gray')
+                ),
+                hovertemplate=f'{asset}<br>' +
+                             f'Beta: {beta:.3f}<br>' +
+                             f'Actual Return: {actual_ret:.2%}<br>' +
+                             f'Expected Return: {expected_ret:.2%}<br>' +
+                             f'Alpha: {alpha:.2%}<br>' +
+                             f'{"Above SML" if above_sml else "Below SML"}<extra></extra>'
+            ))
+            
+            # Add arrow showing alpha (distance from SML)
+            if abs(alpha) > 0.01:  # Only show significant alphas
+                fig.add_annotation(
+                    x=beta,
+                    y=actual_ret,
+                    ax=beta,
+                    ay=expected_ret,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor='green' if above_sml else 'red',
+                    showarrow=True
+                )
+        
+        # Update layout
+        fig.update_layout(
+            title='Security Market Line (SML) - CAPM Analysis',
+            xaxis_title='Beta (Systematic Risk)',
+            yaxis_title='Expected Return',
+            height=600,
+            hovermode='closest',
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+        
+        # Format y-axis as percentage
+        fig.update_layout(yaxis=dict(tickformat='.1%'))
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating Security Market Line: {str(e)}")
+        return go.Figure()
+
 def create_ticker_input() -> List[str]:
     """
-    Create dynamic ticker input with autocomplete functionality.
+    Create categorized ticker selection with predefined asset groups.
     
     Returns:
     --------
     List[str]
         List of selected tickers
     """
-    st.sidebar.header("📊 Ticker Selection")
+    st.sidebar.header("📊 Asset Selection")
     
-    # Input method selection
-    input_method = st.sidebar.radio(
-        "Choose input method:",
-        ["Single Ticker", "Multiple Tickers", "Upload CSV"]
+    # Define asset categories
+    asset_categories = {
+        "🏢 Large Cap Stocks": {
+            "Apple Inc.": "AAPL",
+            "Microsoft Corp.": "MSFT", 
+            "Alphabet Inc.": "GOOGL",
+            "Amazon.com Inc.": "AMZN",
+            "Tesla Inc.": "TSLA",
+            "Meta Platforms": "META",
+            "NVIDIA Corp.": "NVDA",
+            "Berkshire Hathaway": "BRK-B",
+            "Johnson & Johnson": "JNJ",
+            "JPMorgan Chase": "JPM",
+            "Visa Inc.": "V",
+            "Procter & Gamble": "PG",
+            "UnitedHealth Group": "UNH",
+            "Home Depot": "HD",
+            "Mastercard Inc.": "MA"
+        },
+        "💰 Financial Services": {
+            "JPMorgan Chase": "JPM",
+            "Bank of America": "BAC",
+            "Wells Fargo": "WFC",
+            "Goldman Sachs": "GS",
+            "Morgan Stanley": "MS",
+            "American Express": "AXP",
+            "Citigroup": "C",
+            "Charles Schwab": "SCHW",
+            "BlackRock": "BLK",
+            "Visa": "V",
+            "Mastercard": "MA",
+            "PayPal": "PYPL"
+        },
+        "🏭 Technology": {
+            "Apple": "AAPL",
+            "Microsoft": "MSFT",
+            "Alphabet": "GOOGL",
+            "Amazon": "AMZN",
+            "Meta": "META",
+            "NVIDIA": "NVDA",
+            "Intel": "INTC",
+            "AMD": "AMD",
+            "Oracle": "ORCL",
+            "Salesforce": "CRM",
+            "Adobe": "ADBE",
+            "Netflix": "NFLX",
+            "PayPal": "PYPL",
+            "Zoom": "ZM",
+            "Spotify": "SPOT"
+        },
+        "🏥 Healthcare": {
+            "Johnson & Johnson": "JNJ",
+            "UnitedHealth": "UNH",
+            "Pfizer": "PFE",
+            "AbbVie": "ABBV",
+            "Merck": "MRK",
+            "Bristol Myers": "BMY",
+            "Eli Lilly": "LLY",
+            "Moderna": "MRNA",
+            "CVS Health": "CVS",
+            "Anthem": "ANTM",
+            "Humana": "HUM",
+            "Gilead Sciences": "GILD"
+        },
+        "🛒 Consumer Goods": {
+            "Procter & Gamble": "PG",
+            "Coca-Cola": "KO",
+            "PepsiCo": "PEP",
+            "Walmart": "WMT",
+            "Home Depot": "HD",
+            "McDonald's": "MCD",
+            "Nike": "NKE",
+            "Starbucks": "SBUX",
+            "Target": "TGT",
+            "Costco": "COST",
+            "Lowe's": "LOW",
+            "Dollar General": "DG"
+        },
+        "⚡ Energy & Utilities": {
+            "Exxon Mobil": "XOM",
+            "Chevron": "CVX",
+            "ConocoPhillips": "COP",
+            "NextEra Energy": "NEE",
+            "Kinder Morgan": "KMI",
+            "Enbridge": "ENB",
+            "TC Energy": "TRP",
+            "Suncor Energy": "SU",
+            "Enel": "ENEL.MI",
+            "Royal Dutch Shell": "SHEL"
+        },
+        "📊 ETFs - Broad Market": {
+            "SPDR S&P 500": "SPY",
+            "iShares Core S&P 500": "IVV",
+            "Vanguard S&P 500": "VOO",
+            "Invesco QQQ": "QQQ",
+            "Vanguard Total Stock": "VTI",
+            "iShares Russell 2000": "IWM",
+            "Vanguard Mid-Cap": "VO",
+            "Vanguard Small-Cap": "VB",
+            "SPDR Dow Jones": "DIA"
+        },
+        "🌍 ETFs - International": {
+            "iShares MSCI EAFE": "EFA",
+            "Vanguard FTSE Developed": "VEA",
+            "iShares MSCI Emerging": "EEM",
+            "Vanguard Emerging": "VWO",
+            "iShares Europe": "IEV",
+            "iShares Japan": "EWJ",
+            "iShares China": "MCHI",
+            "Vanguard Europe": "VGK"
+        },
+        "🏢 ETFs - Sector": {
+            "Technology (XLK)": "XLK",
+            "Healthcare (XLV)": "XLV",
+            "Financials (XLF)": "XLF",
+            "Consumer Discretionary (XLY)": "XLY",
+            "Energy (XLE)": "XLE",
+            "Industrials (XLI)": "XLI",
+            "Real Estate (XLRE)": "XLRE",
+            "Utilities (XLU)": "XLU",
+            "Materials (XLB)": "XLB",
+            "Communication (XLC)": "XLC"
+        },
+        "💎 Cryptocurrencies": {
+            "Bitcoin": "BTC-USD",
+            "Ethereum": "ETH-USD",
+            "Binance Coin": "BNB-USD",
+            "Cardano": "ADA-USD",
+            "Solana": "SOL-USD",
+            "XRP": "XRP-USD",
+            "Polkadot": "DOT-USD",
+            "Dogecoin": "DOGE-USD",
+            "Avalanche": "AVAX-USD",
+            "Polygon": "MATIC-USD",
+            "Chainlink": "LINK-USD",
+            "Uniswap": "UNI-USD"
+        },
+        "🥇 Commodities": {
+            "Gold ETF (GLD)": "GLD",
+            "Silver ETF (SLV)": "SLV",
+            "Oil ETF (USO)": "USO",
+            "Natural Gas (UNG)": "UNG",
+            "Copper (CPER)": "CPER",
+            "Commodities Index (DJP)": "DJP",
+            "Agriculture (DBA)": "DBA",
+            "Platinum (PPLT)": "PPLT"
+        },
+        "🏠 REITs": {
+            "American Tower": "AMT",
+            "Prologis": "PLD",
+            "Crown Castle": "CCI",
+            "Equinix": "EQIX",
+            "Public Storage": "PSA",
+            "Welltower": "WELL",
+            "Digital Realty": "DLR",
+            "Simon Property": "SPG",
+            "Realty Income": "O",
+            "AvalonBay": "AVB"
+        }
+    }
+    
+    # Selection method
+    selection_method = st.sidebar.radio(
+        "Selection Method:",
+        ["✍️ Manual Entry", "📋 Browse Categories"],
+        index=0
     )
     
     tickers = []
     
-    if input_method == "Single Ticker":
-        # Single ticker input with suggestions
-        ticker_input = st.sidebar.text_input(
-            "Enter Ticker Symbol:",
-            value="AAPL",
-            help="Enter a stock ticker symbol (e.g., AAPL, MSFT, GOOGL)\nFor cryptocurrencies, use format: BTC-USD, ETH-USD, ADA-USD"
-        ).upper().strip()
+    if selection_method == "✍️ Manual Entry":
+        # Manual ticker input
+        input_type = st.sidebar.radio(
+            "Input Type:",
+            ["Single Asset", "Multiple Assets"]
+        )
         
-        if ticker_input:
-            tickers = [ticker_input]
+        if input_type == "Single Asset":
+            ticker_input = st.sidebar.text_input(
+                "Enter Ticker Symbol:",
+                value="AAPL",
+                help="Enter a ticker symbol (e.g., AAPL, BTC-USD)"
+            ).upper().strip()
+            
+            if ticker_input:
+                tickers = [ticker_input]
         
-        # Show ticker format examples
-        with st.sidebar.expander("📋 Ticker Examples"):
-            st.write("**Stocks:** AAPL, MSFT, GOOGL, TSLA")
-            st.write("**ETFs:** SPY, QQQ, VTI, VOO")
-            st.write("**Crypto:** BTC-USD, ETH-USD, ADA-USD")
+        else:
+            ticker_text = st.sidebar.text_area(
+                "Enter Ticker Symbols (one per line):",
+                value="AAPL\nMSFT\nGOOGL",
+                help="Enter multiple ticker symbols, one per line"
+            )
+            
+            if ticker_text:
+                tickers = [t.strip().upper() for t in ticker_text.split('\n') if t.strip()]
+        
+        # Show format help
+        with st.sidebar.expander("💡 Ticker Format Help"):
+            st.write("**US Stocks:** AAPL, MSFT, GOOGL")
+            st.write("**ETFs:** SPY, QQQ, VTI")
+            st.write("**Crypto:** BTC-USD, ETH-USD")
             st.write("**International:** NESN.SW, ASML.AS")
     
-    elif input_method == "Multiple Tickers":
-        # Multiple ticker input
-        ticker_text = st.sidebar.text_area(
-            "Enter Ticker Symbols (one per line):",
-            value="AAPL\nMSFT\nGOOGL",
-            help="Enter multiple ticker symbols, one per line"
-        )
+    elif selection_method == "📋 Browse Categories":
+        # Category-based selection
+        st.sidebar.subheader("Choose Asset Categories")
         
-        if ticker_text:
-            tickers = [t.strip().upper() for t in ticker_text.split('\n') if t.strip()]
-    
-    elif input_method == "Upload CSV":
-        # CSV upload
-        uploaded_file = st.sidebar.file_uploader(
-            "Upload CSV with tickers:",
-            type=['csv'],
-            help="CSV should have a column named 'ticker' or 'symbol'"
-        )
+        selected_assets = []
         
-        if uploaded_file:
-            try:
-                df = pd.read_csv(uploaded_file)
-                # Try to find ticker column
-                ticker_col = None
-                for col in ['ticker', 'symbol', 'Ticker', 'Symbol', 'TICKER', 'SYMBOL']:
-                    if col in df.columns:
-                        ticker_col = col
-                        break
+        # Multi-select for categories
+        with st.sidebar.expander("🎯 Quick Portfolios", expanded=False):
+            col1, col2 = st.sidebar.columns(2)
+            
+            with col1:
+                if st.button("📈 Tech Giants", use_container_width=True):
+                    selected_assets = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
                 
-                if ticker_col:
-                    tickers = df[ticker_col].astype(str).str.upper().str.strip().tolist()
-                    st.sidebar.success(f"Loaded {len(tickers)} tickers from CSV")
-                else:
-                    st.sidebar.error("CSV must contain a column named 'ticker' or 'symbol'")
-            except Exception as e:
-                st.sidebar.error(f"Error reading CSV: {str(e)}")
+                if st.button("💰 Dividend Kings", use_container_width=True):
+                    selected_assets = ["JNJ", "PG", "KO", "PEP", "MCD"]
+                    
+                if st.button("🌍 Global ETFs", use_container_width=True):
+                    selected_assets = ["SPY", "EFA", "EEM", "VTI"]
+            
+            with col2:
+                if st.button("⚡ Clean Energy", use_container_width=True):
+                    selected_assets = ["NEE", "ENPH", "SEDG", "FSLR"]
+                
+                if st.button("💎 Crypto Mix", use_container_width=True):
+                    selected_assets = ["BTC-USD", "ETH-USD", "ADA-USD"]
+                    
+                if st.button("🏢 FAANG", use_container_width=True):
+                    selected_assets = ["META", "AAPL", "AMZN", "NFLX", "GOOGL"]
+        
+        # Individual category selection
+        for category_name, assets in asset_categories.items():
+            with st.sidebar.expander(category_name):
+                # Show asset options in this category
+                asset_names = list(assets.keys())
+                
+                # Multi-select for this category
+                selected_in_category = st.multiselect(
+                    f"Select from {category_name}:",
+                    options=asset_names,
+                    key=f"category_{category_name}",
+                    format_func=lambda x: f"{x} ({assets[x]})"
+                )
+                
+                # Add selected tickers
+                for asset_name in selected_in_category:
+                    ticker = assets[asset_name]
+                    if ticker not in selected_assets:
+                        selected_assets.append(ticker)
+        
+        tickers = selected_assets
+        
+        # Show selected assets summary
+        if tickers:
+            st.sidebar.success(f"✅ Selected {len(tickers)} assets")
+            with st.sidebar.expander("📋 Selected Assets"):
+                for ticker in tickers:
+                    # Find the asset name
+                    asset_name = "Unknown"
+                    for category_assets in asset_categories.values():
+                        for name, symbol in category_assets.items():
+                            if symbol == ticker:
+                                asset_name = name
+                                break
+                    st.write(f"• {ticker} - {asset_name}")
     
     return tickers
 
