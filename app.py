@@ -27,7 +27,7 @@ POPULAR_TICKERS = [
 ]
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def fetch_stock_data(ticker: str, start_date: str, end_date: str, data_type: str = "Close") -> pd.DataFrame:
+def fetch_stock_data(ticker: str, start_date: str, end_date: str, data_type: str = "Close", interval: str = "1d") -> pd.DataFrame:
     """
     Fetch historical stock data using yfinance with caching.
     
@@ -41,6 +41,8 @@ def fetch_stock_data(ticker: str, start_date: str, end_date: str, data_type: str
         End date in YYYY-MM-DD format
     data_type : str
         Type of data to return ('Close', 'Adj Close', 'OHLC', 'All')
+    interval : str
+        Data interval ('1d', '1wk', '1mo')
     
     Returns:
     --------
@@ -50,7 +52,7 @@ def fetch_stock_data(ticker: str, start_date: str, end_date: str, data_type: str
     try:
         # Download data
         stock = yf.Ticker(ticker)
-        data = stock.history(start=start_date, end=end_date)
+        data = stock.history(start=start_date, end=end_date, interval=interval)
         
         if data.empty:
             st.error(f"No data found for ticker {ticker}")
@@ -73,7 +75,7 @@ def fetch_stock_data(ticker: str, start_date: str, end_date: str, data_type: str
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
-def fetch_multiple_tickers(tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
+def fetch_multiple_tickers(tickers: List[str], start_date: str, end_date: str, interval: str = "1d") -> pd.DataFrame:
     """
     Fetch data for multiple tickers and combine into a single DataFrame.
     
@@ -85,6 +87,8 @@ def fetch_multiple_tickers(tickers: List[str], start_date: str, end_date: str) -
         Start date in YYYY-MM-DD format
     end_date : str
         End date in YYYY-MM-DD format
+    interval : str
+        Data interval ('1d', '1wk', '1mo')
     
     Returns:
     --------
@@ -93,7 +97,7 @@ def fetch_multiple_tickers(tickers: List[str], start_date: str, end_date: str) -
     """
     try:
         # Use yfinance to download multiple tickers at once
-        data = yf.download(tickers, start=start_date, end=end_date, group_by='ticker')
+        data = yf.download(tickers, start=start_date, end=end_date, interval=interval, group_by='ticker')
         
         if data.empty:
             return pd.DataFrame()
@@ -166,7 +170,7 @@ def get_ticker_info(ticker: str) -> dict:
         return {'name': ticker, 'sector': 'N/A', 'industry': 'N/A', 'market_cap': 'N/A', 'currency': 'USD'}
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_risk_free_rate(start_date: str, end_date: str, rate_type: str = "^TNX") -> pd.DataFrame:
+def fetch_risk_free_rate(start_date: str, end_date: str, rate_type: str = "^TNX", interval: str = "1d", annualization_factor: int = 252) -> pd.DataFrame:
     """
     Fetch risk-free rate data using Treasury yields.
     
@@ -179,27 +183,45 @@ def fetch_risk_free_rate(start_date: str, end_date: str, rate_type: str = "^TNX"
     rate_type : str
         Risk-free rate proxy ticker. Default is 10Y Treasury (^TNX)
         Options: ^IRX (3-month), ^FVX (5-year), ^TNX (10-year), ^TYX (30-year)
+    interval : str
+        Data interval ('1d', '1wk', '1mo')
+    annualization_factor : int
+        Number of periods per year for the given interval
     
     Returns:
     --------
     pd.DataFrame
-        Risk-free rate data (daily)
+        Risk-free rate data
     """
     try:
         # Fetch Treasury data
         treasury = yf.Ticker(rate_type)
-        data = treasury.history(start=start_date, end=end_date)
+        data = treasury.history(start=start_date, end=end_date, interval=interval)
         
         if data.empty:
             # Fallback to a constant risk-free rate if data unavailable
             st.warning(f"Could not fetch {rate_type} data. Using 2% constant risk-free rate.")
-            dates = pd.date_range(start=start_date, end=end_date, freq='D')
-            rf_rate = pd.DataFrame({'Risk_Free_Rate': [0.02 / 252] * len(dates)}, index=dates)
+            
+            # Create date range based on interval
+            if interval == "1d":
+                dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            elif interval == "1wk":
+                dates = pd.date_range(start=start_date, end=end_date, freq='W')
+            elif interval == "1mo":
+                dates = pd.date_range(start=start_date, end=end_date, freq='MS')  # Month start
+            else:
+                dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            
+            # Convert annual 2% to period returns using compound formula
+            period_rf_constant = (1 + 0.02) ** (1/annualization_factor) - 1
+            rf_rate = pd.DataFrame({'Risk_Free_Rate': [period_rf_constant] * len(dates)}, index=dates)
             return rf_rate
         
-        # Convert annual yield to daily returns (divide by 100 for percentage, then by 252 for daily)
-        daily_rf = (data['Close'] / 100) / 252
-        rf_rate = pd.DataFrame({'Risk_Free_Rate': daily_rf})
+        # Convert annual yield to period returns using compound formula
+        # R_f,t = (1 + R_f,ann)^(Δt) - 1, where Δt = 1/annualization_factor
+        annual_rf = data['Close'] / 100  # Convert percentage to decimal
+        period_rf = (1 + annual_rf) ** (1/annualization_factor) - 1
+        rf_rate = pd.DataFrame({'Risk_Free_Rate': period_rf})
         
         # Remove timezone information to match other data
         rf_rate.index = rf_rate.index.tz_localize(None)
@@ -208,8 +230,20 @@ def fetch_risk_free_rate(start_date: str, end_date: str, rate_type: str = "^TNX"
         
     except Exception as e:
         st.warning(f"Error fetching risk-free rate data: {str(e)}. Using 2% constant rate.")
-        dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        rf_rate = pd.DataFrame({'Risk_Free_Rate': [0.02 / 252] * len(dates)}, index=dates)
+        
+        # Create date range based on interval
+        if interval == "1d":
+            dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        elif interval == "1wk":
+            dates = pd.date_range(start=start_date, end=end_date, freq='W')
+        elif interval == "1mo":
+            dates = pd.date_range(start=start_date, end=end_date, freq='MS')  # Month start
+        else:
+            dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        
+        # Convert annual 2% to period returns using compound formula
+        period_rf_constant = (1 + 0.02) ** (1/annualization_factor) - 1
+        rf_rate = pd.DataFrame({'Risk_Free_Rate': [period_rf_constant] * len(dates)}, index=dates)
         return rf_rate
 
 def calculate_excess_returns(returns_df: pd.DataFrame, rf_rate_df: pd.DataFrame) -> pd.DataFrame:
@@ -229,11 +263,21 @@ def calculate_excess_returns(returns_df: pd.DataFrame, rf_rate_df: pd.DataFrame)
         Excess returns (ri - rf)
     """
     try:
-        # Align dates
-        aligned_rf = rf_rate_df.reindex(returns_df.index, method='ffill')
+        # Ensure both dataframes have compatible datetime indices
+        returns_clean = returns_df.copy()
+        rf_clean = rf_rate_df.copy()
+        
+        # Remove timezone info from both if present to ensure compatibility
+        if returns_clean.index.tz is not None:
+            returns_clean.index = returns_clean.index.tz_localize(None)
+        if rf_clean.index.tz is not None:
+            rf_clean.index = rf_clean.index.tz_localize(None)
+        
+        # Align dates using forward fill for missing risk-free rate dates
+        aligned_rf = rf_clean.reindex(returns_clean.index, method='ffill')
         
         # Calculate excess returns for each asset
-        excess_returns = returns_df.subtract(aligned_rf['Risk_Free_Rate'], axis=0)
+        excess_returns = returns_clean.subtract(aligned_rf['Risk_Free_Rate'], axis=0)
         
         return excess_returns
         
@@ -242,7 +286,8 @@ def calculate_excess_returns(returns_df: pd.DataFrame, rf_rate_df: pd.DataFrame)
         return returns_df  # Return original returns if calculation fails
 
 def calculate_comprehensive_metrics(data: pd.DataFrame, start_date: str, end_date: str, 
-                                  rf_rate_type: str = "^TNX") -> pd.DataFrame:
+                                  rf_rate_type: str = "^TNX", interval: str = "1d", 
+                                  annualization_factor: int = 252) -> pd.DataFrame:
     """
     Calculate comprehensive performance and risk metrics including excess returns.
     
@@ -256,6 +301,10 @@ def calculate_comprehensive_metrics(data: pd.DataFrame, start_date: str, end_dat
         End date for risk-free rate
     rf_rate_type : str
         Risk-free rate ticker
+    interval : str
+        Data interval ('1d', '1wk', '1mo')
+    annualization_factor : int
+        Number of periods per year for the given interval
     
     Returns:
     --------
@@ -269,25 +318,29 @@ def calculate_comprehensive_metrics(data: pd.DataFrame, start_date: str, end_dat
         if returns.empty:
             return pd.DataFrame()
         
+        # Ensure returns index is timezone-naive for compatibility
+        if returns.index.tz is not None:
+            returns.index = returns.index.tz_localize(None)
+        
         # Fetch risk-free rate
-        rf_data = fetch_risk_free_rate(start_date, end_date, rf_rate_type)
+        rf_data = fetch_risk_free_rate(start_date, end_date, rf_rate_type, interval, annualization_factor)
         
         # Calculate excess returns
         excess_returns = calculate_excess_returns(returns, rf_data)
         
-        # Calculate basic metrics using existing functions
-        basic_metrics = calc_performance_metrics(returns, adj=252, var=0.05)
+        # Calculate basic metrics using existing functions with correct annualization factor
+        basic_metrics = calc_performance_metrics(returns, adj=annualization_factor, var=0.05)
         
         # Calculate excess return metrics
         excess_metrics = {}
         for col in excess_returns.columns:
             col_excess = excess_returns[[col]].dropna()
             if not col_excess.empty:
-                excess_metrics[f"{col}_Excess_Return_Ann"] = col_excess.mean().iloc[0] * 252
-                excess_metrics[f"{col}_Excess_Sharpe"] = (col_excess.mean().iloc[0] * 252) / (col_excess.std().iloc[0] * np.sqrt(252))
+                excess_metrics[f"{col}_Excess_Return_Ann"] = col_excess.mean().iloc[0] * annualization_factor
+                excess_metrics[f"{col}_Excess_Sharpe"] = (col_excess.mean().iloc[0] * annualization_factor) / (col_excess.std().iloc[0] * np.sqrt(annualization_factor))
         
         # Add risk-free rate information
-        rf_avg = rf_data['Risk_Free_Rate'].mean() * 252  # Annualized
+        rf_avg = rf_data['Risk_Free_Rate'].mean() * annualization_factor  # Annualized
         
         # Enhanced metrics DataFrame
         enhanced_df = basic_metrics.copy()
@@ -384,7 +437,8 @@ def calculate_diversification_metrics(corr_matrix: pd.DataFrame) -> dict:
         return {}
 
 def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.DataFrame, 
-                          rf_rate_df: pd.DataFrame, market_ticker: str = "SPY") -> dict:
+                          rf_rate_df: pd.DataFrame, market_ticker: str = "SPY", 
+                          annualization_factor: int = 252) -> dict:
     """
     Calculate comprehensive CAPM analysis for assets against market benchmark.
     
@@ -398,6 +452,8 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
         DataFrame with risk-free rate
     market_ticker : str
         Market benchmark ticker symbol
+    annualization_factor : int
+        Number of periods per year for the given frequency
     
     Returns:
     --------
@@ -405,17 +461,30 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
         Dictionary containing CAPM analysis results
     """
     try:
+        # Ensure all dataframes have compatible datetime indices
+        asset_returns_clean = asset_returns.copy()
+        market_returns_clean = market_returns.copy()
+        rf_rate_clean = rf_rate_df.copy()
+        
+        # Remove timezone info from all if present to ensure compatibility
+        if asset_returns_clean.index.tz is not None:
+            asset_returns_clean.index = asset_returns_clean.index.tz_localize(None)
+        if market_returns_clean.index.tz is not None:
+            market_returns_clean.index = market_returns_clean.index.tz_localize(None)
+        if rf_rate_clean.index.tz is not None:
+            rf_rate_clean.index = rf_rate_clean.index.tz_localize(None)
+        
         # Align all data to same dates
-        common_dates = asset_returns.index.intersection(market_returns.index).intersection(rf_rate_df.index)
+        common_dates = asset_returns_clean.index.intersection(market_returns_clean.index).intersection(rf_rate_clean.index)
         
         if len(common_dates) < 30:  # Need sufficient data
             st.warning("Insufficient overlapping data for CAPM analysis (minimum 30 observations required)")
             return {}
         
         # Filter to common dates
-        asset_returns_aligned = asset_returns.loc[common_dates]
-        market_returns_aligned = market_returns.loc[common_dates]
-        rf_rate_aligned = rf_rate_df.loc[common_dates]
+        asset_returns_aligned = asset_returns_clean.loc[common_dates]
+        market_returns_aligned = market_returns_clean.loc[common_dates]
+        rf_rate_aligned = rf_rate_clean.loc[common_dates]
         
         # Calculate excess returns (asset - risk free rate)
         asset_excess_returns = calculate_excess_returns(asset_returns_aligned, rf_rate_aligned)
@@ -438,7 +507,7 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
                     y=asset_excess, 
                     X=market_excess_common, 
                     intercept=True, 
-                    adj=252  # Annualized
+                    adj=annualization_factor  # Use frequency-specific annualization factor
                 )
                 
                 if not regression_results.empty:
@@ -453,12 +522,12 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
                     downside_beta = regression_results.loc[asset, 'Downside Beta']
                     
                     # Calculate expected return using CAPM
-                    market_premium = market_excess_common.mean().iloc[0] * 252  # Annualized market premium
-                    rf_annual = rf_rate_aligned['Risk_Free_Rate'].mean() * 252
+                    market_premium = market_excess_common.mean().iloc[0] * annualization_factor  # Annualized market premium
+                    rf_annual = rf_rate_aligned['Risk_Free_Rate'].mean() * annualization_factor
                     expected_return_capm = rf_annual + beta * market_premium
                     
                     # Calculate actual return
-                    actual_return = asset_returns_aligned[asset].mean() * 252
+                    actual_return = asset_returns_aligned[asset].mean() * annualization_factor
                     
                     # Calculate Jensen's Alpha (actual - expected)
                     jensen_alpha = actual_return - expected_return_capm
@@ -495,9 +564,9 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
             'market_ticker': market_ticker,
             'analysis_period': f"{common_dates[0].strftime('%Y-%m-%d')} to {common_dates[-1].strftime('%Y-%m-%d')}",
             'total_observations': len(common_dates),
-            'market_return_annual': market_returns_aligned.mean().iloc[0] * 252,
-            'market_volatility_annual': market_returns_aligned.std().iloc[0] * np.sqrt(252),
-            'market_sharpe': (market_returns_aligned.mean().iloc[0] * 252 - rf_annual) / (market_returns_aligned.std().iloc[0] * np.sqrt(252)),
+            'market_return_annual': market_returns_aligned.mean().iloc[0] * annualization_factor,
+            'market_volatility_annual': market_returns_aligned.std().iloc[0] * np.sqrt(annualization_factor),
+            'market_sharpe': (market_returns_aligned.mean().iloc[0] * annualization_factor - rf_annual) / (market_returns_aligned.std().iloc[0] * np.sqrt(annualization_factor)),
             'assets_analyzed': list(capm_results.keys()),
             'capm_results': capm_results
         }
@@ -640,7 +709,7 @@ def create_security_market_line(capm_data: dict, rf_rate: float) -> go.Figure:
         )
         
         # Format y-axis as percentage
-        fig.update_yaxis(tickformat='.1%')
+        fig.update_layout(yaxis=dict(tickformat='.1%'))
         
         return fig
         
@@ -905,6 +974,33 @@ def main():
         help="Select what type of price data to analyze"
     )
     
+    # Data frequency selection
+    frequency_options = {
+        "Daily": {"interval": "1d", "annualization_factor": 252},
+        "Weekly": {"interval": "1wk", "annualization_factor": 52},
+        "Monthly": {"interval": "1mo", "annualization_factor": 12}
+    }
+    
+    selected_frequency = st.sidebar.selectbox(
+        "Data Frequency:",
+        options=list(frequency_options.keys()),
+        index=0,  # Default to Daily
+        help="Select the frequency of data points for analysis"
+    )
+    
+    frequency_config = frequency_options[selected_frequency]
+    interval = frequency_config["interval"]
+    annualization_factor = frequency_config["annualization_factor"]
+    
+    # Display frequency information
+    with st.sidebar.expander("ℹ️ Frequency Impact"):
+        st.write(f"**Selected:** {selected_frequency}")
+        st.write(f"**Periods/Year:** {annualization_factor}")
+        st.write("**Impact on Analysis:**")
+        st.write("• Daily: Most granular, 252 trading days/year")
+        st.write("• Weekly: Reduced noise, 52 weeks/year")
+        st.write("• Monthly: Long-term trends, 12 months/year")
+    
     # Main content
     if not tickers:
         st.info("👈 Please select one or more tickers from the sidebar to begin analysis.")
@@ -918,25 +1014,27 @@ def main():
     
     with st.spinner("Fetching data..."):
         if len(tickers) == 1:
-            data = fetch_stock_data(tickers[0], start_date, end_date, data_type)
+            data = fetch_stock_data(tickers[0], start_date, end_date, data_type, interval)
         else:
             if data_type in ["Close", "Adj Close"]:
-                data = fetch_multiple_tickers(tickers, start_date, end_date)
+                data = fetch_multiple_tickers(tickers, start_date, end_date, interval)
             else:
                 st.warning("OHLC and All data types are only available for single ticker analysis.")
-                data = fetch_multiple_tickers(tickers, start_date, end_date)
+                data = fetch_multiple_tickers(tickers, start_date, end_date, interval)
     
     if data.empty:
         st.error("No data available for the selected tickers and date range.")
         return
     
     # Display data info
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Data Points", len(data))
     with col2:
-        st.metric("Date Range", f"{len(data)} days")
+        st.metric("Frequency", selected_frequency)
     with col3:
+        st.metric("Date Range", f"{len(data)} periods")
+    with col4:
         st.metric("Tickers", len(tickers))
     
     # Display raw data
@@ -1007,18 +1105,21 @@ def main():
         st.header("📈 Data Overview")
         st.write("**Dataset Summary:**")
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Tickers", len(tickers))
         with col2:
             st.metric("Data Points", len(data))
         with col3:
-            st.metric("Date Range", f"{(pd.to_datetime(end_date) - pd.to_datetime(start_date)).days} days")
+            st.metric("Frequency", selected_frequency)
         with col4:
+            st.metric("Date Range", f"{(pd.to_datetime(end_date) - pd.to_datetime(start_date)).days} days")
+        with col5:
             if len(tickers) == 1:
                 latest_price = data.iloc[-1, 0]
                 st.metric("Latest Price", f"${latest_price:.2f}")
             else:
+                st.metric("Ann. Factor", annualization_factor)
                 st.metric("Assets", len(tickers))
         
         # Data preview
@@ -1055,7 +1156,7 @@ def main():
                     try:
                         # Calculate comprehensive metrics including excess returns
                         metrics_df = calculate_comprehensive_metrics(
-                            data, start_date, end_date, rf_ticker
+                            data, start_date, end_date, rf_ticker, interval, annualization_factor
                         )
                         
                         if not metrics_df.empty:
@@ -1749,10 +1850,9 @@ def main():
                         title='Jensen Alpha - Risk-Adjusted Outperformance',
                         xaxis_title='Assets',
                         yaxis_title='Alpha (Annualized)',
+                        yaxis=dict(tickformat='.1%'),
                         height=400
                     )
-                    
-                    alpha_fig.update_yaxis(tickformat='.1%')
                     
                     st.plotly_chart(alpha_fig, use_container_width=True)
                     
