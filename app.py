@@ -8,6 +8,7 @@ import plotly.express as px
 from typing import List, Optional
 # Import utils functions for calculations
 from utils import calc_performance_metrics, calc_return_metrics, calc_risk_metrics, calc_univariate_regression
+from utils import calc_tangency_portfolio, calc_gmv_portfolio, calc_mv_portfolio, plot_mv_frontier
 
 # Configure Streamlit page
 st.set_page_config(
@@ -577,7 +578,583 @@ def calculate_capm_analysis(asset_returns: pd.DataFrame, market_returns: pd.Data
         st.error(f"Error in CAPM analysis: {str(e)}")
         return {}
 
-def create_security_market_line(capm_data: dict, rf_rate: float) -> go.Figure:
+def calculate_optimal_portfolios(returns_df: pd.DataFrame, annualization_factor: int = 252) -> dict:
+    """
+    Calculate optimal portfolios using mean-variance optimization.
+    
+    Parameters:
+    -----------
+    returns_df : pd.DataFrame
+        DataFrame of asset returns
+    annualization_factor : int
+        Number of periods per year for the given frequency
+    
+    Returns:
+    --------
+    dict
+        Dictionary containing optimal portfolio results
+    """
+    try:
+        if returns_df.empty or len(returns_df.columns) < 2:
+            return {}
+        
+        # Calculate mean returns and covariance matrix
+        mean_returns = returns_df.mean() * annualization_factor  # Annualized
+        cov_matrix = returns_df.cov() * annualization_factor      # Annualized
+        
+        # Calculate portfolio weights
+        tangency_weights = calc_tangency_portfolio(mean_returns.values, cov_matrix.values)
+        gmv_weights = calc_gmv_portfolio(cov_matrix.values)
+        
+        # Convert to Series with asset names
+        tangency_weights = pd.Series(tangency_weights, index=returns_df.columns, name='Tangency')
+        gmv_weights = pd.Series(gmv_weights, index=returns_df.columns, name='GMV')
+        
+        # Calculate portfolio metrics
+        portfolios = {}
+        
+        # Tangency Portfolio
+        tangency_return = (mean_returns * tangency_weights).sum()
+        tangency_volatility = np.sqrt(tangency_weights.T @ cov_matrix @ tangency_weights)
+        tangency_sharpe = tangency_return / tangency_volatility
+        
+        portfolios['Tangency'] = {
+            'weights': tangency_weights,
+            'expected_return': tangency_return,
+            'volatility': tangency_volatility,
+            'sharpe_ratio': tangency_sharpe
+        }
+        
+        # Global Minimum Variance Portfolio
+        gmv_return = (mean_returns * gmv_weights).sum()
+        gmv_volatility = np.sqrt(gmv_weights.T @ cov_matrix @ gmv_weights)
+        gmv_sharpe = gmv_return / gmv_volatility
+        
+        portfolios['GMV'] = {
+            'weights': gmv_weights,
+            'expected_return': gmv_return,
+            'volatility': gmv_volatility,
+            'sharpe_ratio': gmv_sharpe
+        }
+        
+        # Equally Weighted Portfolio
+        n_assets = len(returns_df.columns)
+        equal_weights = pd.Series([1.0/n_assets] * n_assets, index=returns_df.columns, name='Equal')
+        equal_return = (mean_returns * equal_weights).sum()
+        equal_volatility = np.sqrt(equal_weights.T @ cov_matrix @ equal_weights)
+        equal_sharpe = equal_return / equal_volatility
+        
+        portfolios['Equal Weight'] = {
+            'weights': equal_weights,
+            'expected_return': equal_return,
+            'volatility': equal_volatility,
+            'sharpe_ratio': equal_sharpe
+        }
+        
+        return {
+            'portfolios': portfolios,
+            'mean_returns': mean_returns,
+            'cov_matrix': cov_matrix,
+            'individual_assets': {
+                'returns': mean_returns,
+                'volatilities': np.sqrt(np.diag(cov_matrix)),
+                'sharpe_ratios': mean_returns / np.sqrt(np.diag(cov_matrix))
+            }
+        }
+        
+    except Exception as e:
+        st.error(f"Error calculating optimal portfolios: {str(e)}")
+        return {}
+
+def create_efficient_frontier_data(mean_returns: pd.Series, cov_matrix: pd.DataFrame, 
+                                 n_portfolios: int = 100) -> pd.DataFrame:
+    """
+    Generate efficient frontier data points showing the complete "C" shaped curve.
+    
+    Parameters:
+    -----------
+    mean_returns : pd.Series
+        Mean returns for each asset
+    cov_matrix : pd.DataFrame
+        Covariance matrix
+    n_portfolios : int
+        Number of portfolios to generate for the frontier
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with complete frontier data (both efficient and inefficient)
+    """
+    try:
+        # Calculate GMV portfolio to get the minimum risk point
+        gmv_weights = calc_gmv_portfolio(cov_matrix.values)
+        gmv_return = np.sum(gmv_weights * mean_returns.values)
+        gmv_volatility = np.sqrt(gmv_weights.T @ cov_matrix.values @ gmv_weights)
+        
+        # Calculate tangency portfolio for reference
+        tangency_weights = calc_tangency_portfolio(mean_returns.values, cov_matrix.values)
+        tangency_return = np.sum(tangency_weights * mean_returns.values)
+        
+        # Create a wider range of target returns to capture the full "C" curve
+        # Include returns both above and below the GMV return
+        min_ret = min(mean_returns.min() * 0.8, gmv_return * 0.3)  # Go well below GMV
+        max_ret = max(mean_returns.max() * 1.3, tangency_return * 1.1)  # Go above max return
+        
+        # Create target returns with higher density
+        target_returns = np.linspace(min_ret, max_ret, n_portfolios * 2)
+        
+        all_portfolios = []
+        
+        for target_ret in target_returns:
+            try:
+                # Calculate mean-variance portfolio for target return
+                weights = calc_mv_portfolio(mean_returns.values, cov_matrix.values, 
+                                          excess=False, target=target_ret)
+                
+                # Check if weights are valid (sum to approximately 1)
+                if abs(np.sum(weights) - 1.0) > 0.05:  # More lenient for the full curve
+                    continue
+                
+                # Calculate portfolio metrics
+                portfolio_return = np.sum(weights * mean_returns.values)
+                portfolio_volatility = np.sqrt(weights.T @ cov_matrix.values @ weights)
+                
+                # Include all valid portfolios to show the complete curve
+                if portfolio_volatility > 0 and not np.isnan(portfolio_volatility):
+                    # Determine if this is on the efficient or inefficient frontier
+                    is_efficient = portfolio_return >= gmv_return * 0.995
+                    
+                    all_portfolios.append({
+                        'return': portfolio_return,
+                        'volatility': portfolio_volatility,
+                        'sharpe_ratio': portfolio_return / portfolio_volatility if portfolio_volatility > 0 else 0,
+                        'weights': weights,
+                        'is_efficient': is_efficient
+                    })
+                
+            except Exception:
+                continue  # Skip problematic portfolios
+        
+        # Add GMV portfolio explicitly (this is the turning point of the "C")
+        all_portfolios.append({
+            'return': gmv_return,
+            'volatility': gmv_volatility,
+            'sharpe_ratio': gmv_return / gmv_volatility if gmv_volatility > 0 else 0,
+            'weights': gmv_weights,
+            'is_efficient': True
+        })
+        
+        # Add tangency portfolio explicitly
+        tangency_volatility = np.sqrt(tangency_weights.T @ cov_matrix.values @ tangency_weights)
+        all_portfolios.append({
+            'return': tangency_return,
+            'volatility': tangency_volatility,
+            'sharpe_ratio': tangency_return / tangency_volatility if tangency_volatility > 0 else 0,
+            'weights': tangency_weights,
+            'is_efficient': True
+        })
+        
+        # Convert to DataFrame and sort by volatility to create smooth curve
+        frontier_df = pd.DataFrame(all_portfolios)
+        if not frontier_df.empty:
+            frontier_df = frontier_df.sort_values('volatility').drop_duplicates(subset=['volatility'], keep='first')
+            
+            # Remove any extreme outliers that might distort the curve
+            vol_q99 = frontier_df['volatility'].quantile(0.99)
+            vol_q01 = frontier_df['volatility'].quantile(0.01)
+            frontier_df = frontier_df[
+                (frontier_df['volatility'] >= vol_q01) & 
+                (frontier_df['volatility'] <= vol_q99)
+            ]
+        
+        return frontier_df
+        
+    except Exception as e:
+        st.error(f"Error creating efficient frontier: {str(e)}")
+        return pd.DataFrame()
+
+def create_efficient_frontier_plot(optimal_data: dict, returns_df: pd.DataFrame) -> go.Figure:
+    """
+    Create efficient frontier visualization showing the complete "C" shaped curve.
+    
+    Parameters:
+    -----------
+    optimal_data : dict
+        Optimal portfolio data
+    returns_df : pd.DataFrame
+        Returns data for calculating efficient frontier
+    
+    Returns:
+    --------
+    go.Figure
+        Plotly figure with complete efficient frontier
+    """
+    try:
+        fig = go.Figure()
+        
+        if not optimal_data or 'mean_returns' not in optimal_data:
+            return fig
+        
+        mean_returns = optimal_data['mean_returns']
+        cov_matrix = optimal_data['cov_matrix']
+        portfolios = optimal_data['portfolios']
+        individual_assets = optimal_data['individual_assets']
+        
+        # Generate complete frontier with more points for smoother "C" curve
+        frontier_data = create_efficient_frontier_data(mean_returns, cov_matrix, n_portfolios=150)
+        
+        if not frontier_data.empty and len(frontier_data) > 1:
+            # Sort by volatility to ensure proper line drawing
+            frontier_data = frontier_data.sort_values('volatility')
+            
+            # Separate efficient and inefficient portions
+            efficient_data = frontier_data[frontier_data['is_efficient'] == True]
+            inefficient_data = frontier_data[frontier_data['is_efficient'] == False]
+            
+            # Plot the complete frontier as one continuous line first
+            fig.add_trace(go.Scatter(
+                x=frontier_data['volatility'],
+                y=frontier_data['return'],
+                mode='lines',
+                name='Complete Frontier',
+                line=dict(color='lightblue', width=2, dash='solid'),
+                hovertemplate='Complete Frontier<br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<br>Sharpe: %{customdata:.3f}<extra></extra>',
+                customdata=frontier_data['sharpe_ratio'],
+                showlegend=True
+            ))
+            
+            # Overlay the efficient portion with a different style
+            if not efficient_data.empty:
+                efficient_data_sorted = efficient_data.sort_values('volatility')
+                fig.add_trace(go.Scatter(
+                    x=efficient_data_sorted['volatility'],
+                    y=efficient_data_sorted['return'],
+                    mode='lines',
+                    name='Efficient Frontier',
+                    line=dict(color='navy', width=4),
+                    hovertemplate='Efficient Frontier<br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<br>Sharpe: %{customdata:.3f}<extra></extra>',
+                    customdata=efficient_data_sorted['sharpe_ratio']
+                ))
+            
+            # Add markers to show the distinction more clearly
+            if not inefficient_data.empty:
+                fig.add_trace(go.Scatter(
+                    x=inefficient_data['volatility'],
+                    y=inefficient_data['return'],
+                    mode='markers',
+                    name='Inefficient Region',
+                    marker=dict(size=4, color='lightcoral', symbol='circle', opacity=0.6),
+                    hovertemplate='Inefficient Portfolio<br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<br>Sharpe: %{customdata:.3f}<extra></extra>',
+                    customdata=inefficient_data['sharpe_ratio']
+                ))
+            
+            # Add markers on efficient frontier for key points
+            if not efficient_data.empty:
+                n_markers = min(8, len(efficient_data))
+                if n_markers > 0:
+                    marker_indices = np.linspace(0, len(efficient_data)-1, n_markers, dtype=int)
+                    marker_data = efficient_data.iloc[marker_indices]
+                    
+                    fig.add_trace(go.Scatter(
+                        x=marker_data['volatility'],
+                        y=marker_data['return'],
+                        mode='markers',
+                        name='Efficient Points',
+                        marker=dict(size=6, color='darkblue', symbol='circle'),
+                        showlegend=False,
+                        hovertemplate='Efficient Point<br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<br>Sharpe: %{customdata:.3f}<extra></extra>',
+                        customdata=marker_data['sharpe_ratio']
+                    ))
+        else:
+            st.warning("Unable to generate complete frontier with current data. This may occur with highly correlated assets or insufficient data.")
+        
+        # Add individual assets
+        fig.add_trace(go.Scatter(
+            x=individual_assets['volatilities'],
+            y=individual_assets['returns'],
+            mode='markers+text',
+            name='Individual Assets',
+            marker=dict(size=14, color='lightgray', symbol='circle', line=dict(width=2, color='black')),
+            text=individual_assets['returns'].index,
+            textposition='top center',
+            textfont=dict(size=10, color='black'),
+            hovertemplate='%{text}<br>Volatility: %{x:.2%}<br>Return: %{y:.2%}<br>Sharpe: %{customdata:.3f}<extra></extra>',
+            customdata=individual_assets['sharpe_ratios']
+        ))
+        
+        # Add optimal portfolios with enhanced styling
+        colors = {'Tangency': 'red', 'GMV': 'green', 'Equal Weight': 'orange'}
+        symbols = {'Tangency': 'star', 'GMV': 'diamond', 'Equal Weight': 'square'}
+        sizes = {'Tangency': 20, 'GMV': 18, 'Equal Weight': 16}
+        
+        for portfolio_name, portfolio_data in portfolios.items():
+            fig.add_trace(go.Scatter(
+                x=[portfolio_data['volatility']],
+                y=[portfolio_data['expected_return']],
+                mode='markers+text',
+                name=f'{portfolio_name} Portfolio',
+                marker=dict(
+                    size=sizes.get(portfolio_name, 18),
+                    color=colors.get(portfolio_name, 'purple'),
+                    symbol=symbols.get(portfolio_name, 'circle'),
+                    line=dict(width=3, color='white')
+                ),
+                text=[portfolio_name],
+                textposition='top center',
+                textfont=dict(size=10, color='black', family='Arial Black'),
+                hovertemplate=f'{portfolio_name} Portfolio<br>' +
+                             f'Volatility: {portfolio_data["volatility"]:.2%}<br>' +
+                             f'Return: {portfolio_data["expected_return"]:.2%}<br>' +
+                             f'Sharpe: {portfolio_data["sharpe_ratio"]:.3f}<extra></extra>'
+            ))
+        
+        # Update layout with improved styling
+        fig.update_layout(
+            title=dict(
+                text='Complete Efficient Frontier - "C" Shaped Curve',
+                font=dict(size=18, color='black'),
+                x=0.5
+            ),
+            xaxis_title='Volatility (Risk)',
+            yaxis_title='Expected Return',
+            height=650,
+            hovermode='closest',
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01,
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="black",
+                borderwidth=1
+            ),
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
+        
+        # Format axes as percentages
+        fig.update_layout(
+            xaxis=dict(
+                tickformat='.1%',
+                gridcolor='lightgray',
+                gridwidth=1,
+                showgrid=True
+            ),
+            yaxis=dict(
+                tickformat='.1%',
+                gridcolor='lightgray',
+                gridwidth=1,
+                showgrid=True
+            )
+        )
+        
+        # Add annotations for better understanding
+        if portfolios:
+            gmv_portfolio = portfolios.get('GMV')
+            tangency_portfolio = portfolios.get('Tangency')
+            
+            if gmv_portfolio:
+                fig.add_annotation(
+                    x=gmv_portfolio['volatility'],
+                    y=gmv_portfolio['expected_return'],
+                    text="Minimum Risk<br>(Turning Point)",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowcolor="green",
+                    ax=30,
+                    ay=-40,
+                    font=dict(size=10, color="green")
+                )
+            
+            if tangency_portfolio:
+                fig.add_annotation(
+                    x=tangency_portfolio['volatility'],
+                    y=tangency_portfolio['expected_return'],
+                    text="Max Sharpe Ratio<br>(Optimal)",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowcolor="red",
+                    ax=30,
+                    ay=40,
+                    font=dict(size=10, color="red")
+                )
+        
+        # Add explanatory annotation about the curve shape
+        fig.add_annotation(
+            x=0.02, y=0.02,
+            xref="paper", yref="paper",
+            text="<b>Curve Explanation:</b><br>" +
+                 "• Complete 'C' shaped frontier shown<br>" +
+                 "• Dark blue: Efficient frontier (upper curve)<br>" +
+                 "• Light blue: Complete frontier including inefficient region<br>" +
+                 "• Red dots: Inefficient portfolios (lower curve)",
+            showarrow=False,
+            align="left",
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="black",
+            borderwidth=1,
+            font=dict(size=9)
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating efficient frontier plot: {str(e)}")
+        return go.Figure()
+
+def create_portfolio_weights_chart(optimal_data: dict) -> go.Figure:
+    """
+    Create portfolio weights comparison chart.
+    
+    Parameters:
+    -----------
+    optimal_data : dict
+        Optimal portfolio data
+    
+    Returns:
+    --------
+    go.Figure
+        Plotly figure with portfolio weights
+    """
+    try:
+        fig = go.Figure()
+        
+        if not optimal_data or 'portfolios' not in optimal_data:
+            return fig
+        
+        portfolios = optimal_data['portfolios']
+        
+        # Extract weights data
+        weights_data = []
+        portfolio_names = []
+        
+        for portfolio_name, portfolio_data in portfolios.items():
+            weights = portfolio_data['weights']
+            weights_data.append(weights.values)
+            portfolio_names.append(portfolio_name)
+        
+        # Create stacked bar chart
+        assets = list(portfolios[list(portfolios.keys())[0]]['weights'].index)
+        
+        for i, asset in enumerate(assets):
+            asset_weights = [weights[i] for weights in weights_data]
+            
+            fig.add_trace(go.Bar(
+                name=asset,
+                x=portfolio_names,
+                y=asset_weights,
+                hovertemplate=f'{asset}<br>Weight: %{{y:.1%}}<extra></extra>'
+            ))
+        
+        # Update layout
+        fig.update_layout(
+            title='Portfolio Weights Comparison',
+            xaxis_title='Portfolio Type',
+            yaxis_title='Weight Allocation',
+            barmode='stack',
+            height=500,
+            yaxis=dict(tickformat='.0%')
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating portfolio weights chart: {str(e)}")
+        return go.Figure()
+
+def create_risk_return_comparison(optimal_data: dict) -> pd.DataFrame:
+    """
+    Create risk-return comparison table.
+    
+    Parameters:
+    -----------
+    optimal_data : dict
+        Optimal portfolio data
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Comparison table
+    """
+    try:
+        if not optimal_data or 'portfolios' not in optimal_data:
+            return pd.DataFrame()
+        
+        portfolios = optimal_data['portfolios']
+        individual_assets = optimal_data['individual_assets']
+        
+        comparison_data = []
+        
+        # Add individual assets
+        returns_series = individual_assets['returns']
+        volatilities_array = individual_assets['volatilities']
+        sharpe_ratios_array = individual_assets['sharpe_ratios']
+        
+        for i, asset in enumerate(returns_series.index):
+            comparison_data.append({
+                'Portfolio/Asset': asset,
+                'Type': 'Individual Asset',
+                'Expected Return': returns_series.iloc[i],
+                'Volatility': volatilities_array[i],
+                'Sharpe Ratio': sharpe_ratios_array[i]
+            })
+        
+        # Add optimal portfolios
+        for portfolio_name, portfolio_data in portfolios.items():
+            comparison_data.append({
+                'Portfolio/Asset': portfolio_name,
+                'Type': 'Optimal Portfolio',
+                'Expected Return': portfolio_data['expected_return'],
+                'Volatility': portfolio_data['volatility'],
+                'Sharpe Ratio': portfolio_data['sharpe_ratio']
+            })
+        
+        return pd.DataFrame(comparison_data)
+        
+    except Exception as e:
+        st.error(f"Error creating risk-return comparison: {str(e)}")
+        return pd.DataFrame()
+
+def calculate_portfolio_metrics_over_time(returns_df: pd.DataFrame, weights: pd.Series, 
+                                        rolling_window: int = 60) -> pd.DataFrame:
+    """
+    Calculate rolling portfolio metrics over time.
+    
+    Parameters:
+    -----------
+    returns_df : pd.DataFrame
+        Asset returns
+    weights : pd.Series
+        Portfolio weights
+    rolling_window : int
+        Rolling window size
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Rolling portfolio metrics
+    """
+    try:
+        # Calculate portfolio returns
+        portfolio_returns = (returns_df * weights).sum(axis=1)
+        
+        # Calculate rolling metrics
+        rolling_metrics = pd.DataFrame(index=returns_df.index)
+        rolling_metrics['Portfolio_Return'] = portfolio_returns
+        rolling_metrics['Rolling_Return'] = portfolio_returns.rolling(rolling_window).mean()
+        rolling_metrics['Rolling_Volatility'] = portfolio_returns.rolling(rolling_window).std()
+        rolling_metrics['Rolling_Sharpe'] = rolling_metrics['Rolling_Return'] / rolling_metrics['Rolling_Volatility']
+        
+        # Calculate cumulative returns
+        rolling_metrics['Cumulative_Return'] = (1 + portfolio_returns).cumprod()
+        
+        return rolling_metrics.dropna()
+        
+    except Exception as e:
+        st.error(f"Error calculating portfolio metrics over time: {str(e)}")
+        return pd.DataFrame()
     """
     Create Security Market Line visualization for CAPM analysis.
     
@@ -2360,25 +2937,335 @@ def main():
     
     with tab6:
         st.header("🎯 Portfolio Optimization")
-        st.info("🚧 **Coming Soon:** Mean-variance optimization, efficient frontier, and optimal portfolio weights.")
         
-        # Placeholder for optimization
-        st.write("**Planned Features:**")
-        st.write("- 📈 Efficient Frontier")
-        st.write("- 🎯 Tangency Portfolio")
-        st.write("- ⚖️ Minimum Variance Portfolio")
-        st.write("- 📊 Risk-Return Optimization")
-        st.write("- 💼 Portfolio Weights")
-        st.write("- 📋 Optimization Constraints")
-        
-        if len(tickers) > 1:
-            st.write("**Optimization Requirements:**")
-            st.write("✅ Multiple assets selected")
-            st.write("✅ Historical data available")
-            st.write("🔲 Risk preferences (coming soon)")
-            st.write("🔲 Portfolio constraints (coming soon)")
+        if data is None or data.empty:
+            st.warning("Please load data in the Overview tab first.")
+        elif len(tickers) < 2:
+            st.warning("📝 **Note:** Portfolio optimization requires multiple assets. Please select at least 2 tickers.")
+            
+            # Show what features will be available
+            st.subheader("🔮 Available Features (Multi-Asset)")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**📈 Optimization Methods:**")
+                st.write("• Tangency Portfolio (Maximum Sharpe)")
+                st.write("• Global Minimum Variance Portfolio")
+                st.write("• Mean-Variance Efficient Portfolios")
+                st.write("• Equal Weight Portfolio")
+                
+            with col2:
+                st.write("**📊 Visualizations:**")
+                st.write("• Efficient Frontier")
+                st.write("• Portfolio Weights Comparison")
+                st.write("• Risk-Return Analysis")
+                st.write("• Portfolio Performance Over Time")
+                
         else:
-            st.warning("📝 **Note:** Portfolio optimization requires multiple assets. Please select multiple tickers.")
+            # Portfolio optimization for multiple assets
+            try:
+                # Calculate returns
+                returns = data.pct_change().dropna()
+                
+                if returns.empty:
+                    st.error("Unable to calculate returns from the data.")
+                else:
+                    # Optimization controls
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    with col1:
+                        rolling_window = st.selectbox(
+                            "Rolling Window for Time-Series Analysis:",
+                            options=[30, 60, 90, 120],
+                            index=1,  # Default to 60 days
+                            help="Window size for rolling portfolio metrics analysis"
+                        )
+                    
+                    with col2:
+                        manual_calculate_optimization = st.button("🎯 Optimize Portfolios", type="primary")
+                    
+                    with col3:
+                        show_advanced = st.checkbox("Show Advanced Options", value=False)
+                    
+                    # Advanced options
+                    if show_advanced:
+                        with st.expander("⚙️ Advanced Optimization Settings"):
+                            st.write("**Risk-Free Rate:**")
+                            use_custom_rf = st.checkbox("Use custom risk-free rate", value=False)
+                            if use_custom_rf:
+                                custom_rf_rate = st.number_input(
+                                    "Annual risk-free rate (%)", 
+                                    min_value=0.0, 
+                                    max_value=10.0, 
+                                    value=2.0, 
+                                    step=0.1
+                                ) / 100
+                            
+                            st.write("**Frontier Resolution:**")
+                            frontier_points = st.slider(
+                                "Number of efficient frontier points", 
+                                min_value=50, 
+                                max_value=200, 
+                                value=100, 
+                                step=10
+                            )
+                    
+                    # Trigger calculation
+                    trigger_optimization = (
+                        manual_calculate_optimization or
+                        st.session_state.get('auto_calculate', False) or
+                        'optimal_portfolios' not in st.session_state
+                    )
+                    
+                    if trigger_optimization:
+                        with st.spinner("🎯 Calculating optimal portfolios..."):
+                            # Calculate optimal portfolios
+                            optimal_data = calculate_optimal_portfolios(returns, annualization_factor)
+                            
+                            if optimal_data:
+                                st.session_state['optimal_portfolios'] = optimal_data
+                                st.session_state['rolling_window'] = rolling_window
+                                st.success("✅ Portfolio optimization completed!")
+                            else:
+                                st.error("Unable to calculate optimal portfolios.")
+                    
+                    # Display results if available
+                    if 'optimal_portfolios' in st.session_state and st.session_state['optimal_portfolios']:
+                        optimal_data = st.session_state['optimal_portfolios']
+                        
+                        # Key Performance Summary
+                        st.subheader("📊 Optimal Portfolio Summary")
+                        
+                        portfolios = optimal_data['portfolios']
+                        
+                        # Create metrics display
+                        col1, col2, col3 = st.columns(3)
+                        
+                        portfolio_names = list(portfolios.keys())
+                        
+                        for i, (portfolio_name, portfolio_data) in enumerate(portfolios.items()):
+                            with [col1, col2, col3][i]:
+                                expected_return = portfolio_data['expected_return']
+                                volatility = portfolio_data['volatility']
+                                sharpe_ratio = portfolio_data['sharpe_ratio']
+                                
+                                st.metric(
+                                    label=f"🎯 {portfolio_name}",
+                                    value=f"{expected_return:.2%}",
+                                    delta=f"Risk: {volatility:.2%}"
+                                )
+                                st.caption(f"Sharpe: {sharpe_ratio:.3f}")
+                        
+                        # Efficient Frontier Visualization
+                        st.subheader("📈 Efficient Frontier")
+                        
+                        frontier_fig = create_efficient_frontier_plot(optimal_data, returns)
+                        st.plotly_chart(frontier_fig, use_container_width=True)
+                        
+                        # Portfolio Weights Analysis
+                        st.subheader("📊 Portfolio Weights Comparison")
+                        
+                        col1, col2 = st.columns([1, 1])
+                        
+                        with col1:
+                            # Weights chart
+                            weights_fig = create_portfolio_weights_chart(optimal_data)
+                            st.plotly_chart(weights_fig, use_container_width=True)
+                        
+                        with col2:
+                            # Weights table
+                            st.write("**Detailed Portfolio Weights:**")
+                            weights_df = pd.DataFrame({
+                                name: data['weights'] 
+                                for name, data in portfolios.items()
+                            })
+                            
+                            # Format as percentages
+                            weights_display = weights_df.copy()
+                            for col in weights_display.columns:
+                                weights_display[col] = weights_display[col].apply(lambda x: f"{x:.2%}")
+                            
+                            st.dataframe(weights_display, use_container_width=True)
+                        
+                        # Risk-Return Comparison
+                        st.subheader("⚖️ Risk-Return Analysis")
+                        
+                        comparison_df = create_risk_return_comparison(optimal_data)
+                        
+                        if not comparison_df.empty:
+                            # Format the display
+                            display_comparison = comparison_df.copy()
+                            display_comparison['Expected Return'] = display_comparison['Expected Return'].apply(lambda x: f"{x:.2%}")
+                            display_comparison['Volatility'] = display_comparison['Volatility'].apply(lambda x: f"{x:.2%}")
+                            display_comparison['Sharpe Ratio'] = display_comparison['Sharpe Ratio'].apply(lambda x: f"{x:.3f}")
+                            
+                            st.dataframe(display_comparison, use_container_width=True)
+                        
+                        # Portfolio Performance Over Time
+                        st.subheader("📈 Portfolio Performance Analysis")
+                        
+                        # Performance comparison for each optimal portfolio
+                        portfolio_tabs = st.tabs([f"📊 {name}" for name in portfolios.keys()])
+                        
+                        for i, (portfolio_name, portfolio_data) in enumerate(portfolios.items()):
+                            with portfolio_tabs[i]:
+                                weights = portfolio_data['weights']
+                                
+                                # Calculate portfolio metrics over time
+                                window = st.session_state.get('rolling_window', 60)
+                                performance_metrics = calculate_portfolio_metrics_over_time(
+                                    returns, weights, window
+                                )
+                                
+                                if not performance_metrics.empty:
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        # Cumulative returns
+                                        fig_cumret = go.Figure()
+                                        fig_cumret.add_trace(go.Scatter(
+                                            x=performance_metrics.index,
+                                            y=performance_metrics['Cumulative_Return'],
+                                            mode='lines',
+                                            name=f'{portfolio_name} Portfolio',
+                                            line=dict(width=2)
+                                        ))
+                                        
+                                        # Add individual asset cumulative returns for comparison
+                                        for asset in returns.columns:
+                                            asset_cumret = (1 + returns[asset]).cumprod()
+                                            fig_cumret.add_trace(go.Scatter(
+                                                x=asset_cumret.index,
+                                                y=asset_cumret,
+                                                mode='lines',
+                                                name=asset,
+                                                line=dict(width=1, dash='dot'),
+                                                opacity=0.6
+                                            ))
+                                        
+                                        fig_cumret.update_layout(
+                                            title=f'{portfolio_name} - Cumulative Returns',
+                                            xaxis_title='Date',
+                                            yaxis_title='Cumulative Return',
+                                            height=400
+                                        )
+                                        st.plotly_chart(fig_cumret, use_container_width=True)
+                                    
+                                    with col2:
+                                        # Rolling Sharpe ratio
+                                        fig_sharpe = go.Figure()
+                                        fig_sharpe.add_trace(go.Scatter(
+                                            x=performance_metrics.index,
+                                            y=performance_metrics['Rolling_Sharpe'],
+                                            mode='lines',
+                                            name=f'Rolling Sharpe ({window} days)',
+                                            line=dict(width=2)
+                                        ))
+                                        
+                                        fig_sharpe.update_layout(
+                                            title=f'{portfolio_name} - Rolling Sharpe Ratio',
+                                            xaxis_title='Date',
+                                            yaxis_title='Sharpe Ratio',
+                                            height=400
+                                        )
+                                        st.plotly_chart(fig_sharpe, use_container_width=True)
+                                    
+                                    # Portfolio statistics
+                                    st.write(f"**{portfolio_name} Portfolio Statistics:**")
+                                    
+                                    portfolio_returns = performance_metrics['Portfolio_Return']
+                                    total_return = performance_metrics['Cumulative_Return'].iloc[-1] - 1
+                                    annualized_return = portfolio_data['expected_return']
+                                    annualized_vol = portfolio_data['volatility']
+                                    max_drawdown = ((performance_metrics['Cumulative_Return'] / 
+                                                   performance_metrics['Cumulative_Return'].cummax()) - 1).min()
+                                    
+                                    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+                                    
+                                    with stats_col1:
+                                        st.metric("Total Return", f"{total_return:.2%}")
+                                    with stats_col2:
+                                        st.metric("Annualized Return", f"{annualized_return:.2%}")
+                                    with stats_col3:
+                                        st.metric("Annualized Volatility", f"{annualized_vol:.2%}")
+                                    with stats_col4:
+                                        st.metric("Max Drawdown", f"{max_drawdown:.2%}")
+                        
+                        # Download Portfolio Data
+                        st.subheader("📥 Download Portfolio Data")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Portfolio weights CSV
+                            weights_csv = pd.DataFrame({
+                                name: data['weights'] 
+                                for name, data in portfolios.items()
+                            }).to_csv()
+                            
+                            st.download_button(
+                                label="📊 Download Portfolio Weights",
+                                data=weights_csv,
+                                file_name=f"optimal_portfolio_weights_{datetime.now().strftime('%Y%m%d')}.csv",
+                                mime="text/csv"
+                            )
+                        
+                        with col2:
+                            # Portfolio summary CSV
+                            summary_csv = comparison_df.to_csv(index=False)
+                            
+                            st.download_button(
+                                label="📈 Download Portfolio Summary",
+                                data=summary_csv,
+                                file_name=f"portfolio_optimization_summary_{datetime.now().strftime('%Y%m%d')}.csv",
+                                mime="text/csv"
+                            )
+                        
+                        # Investment Recommendations
+                        st.subheader("💡 Investment Insights")
+                        
+                        # Find best portfolio by Sharpe ratio
+                        best_portfolio = max(portfolios.items(), key=lambda x: x[1]['sharpe_ratio'])
+                        best_name, best_data = best_portfolio
+                        
+                        st.success(f"🎯 **Recommended Portfolio:** {best_name}")
+                        st.write(f"**Rationale:** This portfolio offers the highest risk-adjusted return (Sharpe ratio: {best_data['sharpe_ratio']:.3f})")
+                        
+                        # Portfolio insights
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.info("📊 **Portfolio Insights:**")
+                            
+                            # Concentration analysis
+                            best_weights = best_data['weights']
+                            max_weight = best_weights.max()
+                            max_weight_asset = best_weights.idxmax()
+                            
+                            if max_weight > 0.4:
+                                st.write(f"⚠️ High concentration in {max_weight_asset} ({max_weight:.1%})")
+                            else:
+                                st.write(f"✅ Well diversified portfolio (max weight: {max_weight:.1%})")
+                            
+                            # Risk assessment
+                            if best_data['volatility'] < 0.15:
+                                st.write("🔒 Conservative risk profile")
+                            elif best_data['volatility'] < 0.25:
+                                st.write("⚖️ Moderate risk profile")
+                            else:
+                                st.write("⚡ Aggressive risk profile")
+                        
+                        with col2:
+                            st.info("🎯 **Optimization Notes:**")
+                            st.write("• Tangency portfolio maximizes Sharpe ratio")
+                            st.write("• GMV portfolio minimizes volatility")
+                            st.write("• Equal weight provides naive diversification")
+                            st.write("• Results based on historical data")
+                            st.write("• Consider transaction costs in practice")
+            
+            except Exception as e:
+                st.error(f"Error in portfolio optimization: {str(e)}")
+                st.write("Please check your data and try again.")
     
     # Reset auto-calculate flag after all tabs have been processed
     if 'auto_calculate' in st.session_state:
