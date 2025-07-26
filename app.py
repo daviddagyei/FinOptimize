@@ -1087,6 +1087,20 @@ def main():
     st.session_state['tickers'] = tickers
     st.session_state['start_date'] = start_date
     st.session_state['end_date'] = end_date
+    st.session_state['interval'] = interval
+    st.session_state['annualization_factor'] = annualization_factor
+    st.session_state['selected_frequency'] = selected_frequency
+    
+    # Auto-trigger analysis with default parameters when data changes
+    current_data_key = f"{str(tickers)}_{start_date}_{end_date}_{interval}_{data_type}"
+    if 'last_data_key' not in st.session_state or st.session_state['last_data_key'] != current_data_key:
+        st.session_state['last_data_key'] = current_data_key
+        # Trigger auto-calculation with default parameters
+        st.session_state['auto_calculate'] = True
+        # Clear previous calculations to force recalculation
+        for key in ['metrics_df', 'risk_df', 'capm_results', 'correlation_analysis']:
+            if key in st.session_state:
+                del st.session_state[key]
     
     # Analysis Tabs
     st.subheader("📊 Portfolio Analysis")
@@ -1136,22 +1150,31 @@ def main():
         st.header("📊 Return Metrics Analysis")
         
         if not data.empty:
-            # Risk-free rate selection
-            col1, col2 = st.columns([2, 1])
+            # Risk-free rate selection with manual button
+            col1, col2 = st.columns([3, 1])
             with col1:
                 rf_rate_option = st.selectbox(
                     "Select Risk-Free Rate Proxy:",
                     options=[("^IRX", "3-Month Treasury"), ("^FVX", "5-Year Treasury"), 
                             ("^TNX", "10-Year Treasury"), ("^TYX", "30-Year Treasury")],
                     index=2,  # Default to 10-year
-                    format_func=lambda x: x[1]
+                    format_func=lambda x: x[1],
+                    key="rf_rate_selection"
                 )
                 rf_ticker = rf_rate_option[0]
             
             with col2:
-                calculate_metrics = st.button("📊 Calculate Metrics", type="primary")
+                manual_calculate_metrics = st.button("📊 Calculate Metrics", type="primary")
             
-            if calculate_metrics or 'metrics_calculated' not in st.session_state:
+            # Trigger calculation either manually or automatically
+            trigger_calculation = (
+                manual_calculate_metrics or
+                st.session_state.get('auto_calculate', False) or
+                'metrics_df' not in st.session_state or
+                st.session_state.get('rf_ticker') != rf_ticker
+            )
+            
+            if trigger_calculation:
                 with st.spinner("Calculating comprehensive performance metrics..."):
                     try:
                         # Calculate comprehensive metrics including excess returns
@@ -1161,8 +1184,8 @@ def main():
                         
                         if not metrics_df.empty:
                             st.session_state['metrics_df'] = metrics_df
-                            st.session_state['metrics_calculated'] = True
                             st.session_state['rf_ticker'] = rf_ticker
+                            st.success(f"✅ Metrics calculated using {rf_ticker} as risk-free rate")
                         else:
                             st.error("Unable to calculate metrics. Please check your data.")
                     
@@ -1172,8 +1195,6 @@ def main():
             # Display metrics if available
             if 'metrics_df' in st.session_state and not st.session_state['metrics_df'].empty:
                 metrics_df = st.session_state['metrics_df']
-                
-                st.success(f"✅ Metrics calculated using {st.session_state.get('rf_ticker', '^TNX')} as risk-free rate")
                 
                 # Key Performance Indicators
                 st.subheader("🎯 Key Performance Indicators")
@@ -1293,19 +1314,28 @@ def main():
             returns = data.pct_change().dropna()
             
             if not returns.empty:
-                col1, col2 = st.columns([2, 1])
+                col1, col2 = st.columns([3, 1])
                 with col1:
                     var_level = st.selectbox(
                         "Select VaR Confidence Level:",
                         options=[0.01, 0.05, 0.10],
                         index=1,  # Default to 5%
-                        format_func=lambda x: f"{(1-x)*100:.0f}% confidence ({x*100:.0f}% VaR)"
+                        format_func=lambda x: f"{(1-x)*100:.0f}% confidence ({x*100:.0f}% VaR)",
+                        key="var_level_selection"
                     )
                 
                 with col2:
-                    calculate_risk = st.button("📊 Calculate Risk Metrics", type="primary")
+                    manual_calculate_risk = st.button("📊 Calculate Risk Metrics", type="primary")
                 
-                if calculate_risk or 'risk_metrics_calculated' not in st.session_state:
+                # Trigger calculation either manually or automatically
+                trigger_risk_calculation = (
+                    manual_calculate_risk or
+                    st.session_state.get('auto_calculate', False) or
+                    'risk_df' not in st.session_state or
+                    st.session_state.get('var_level') != var_level
+                )
+                
+                if trigger_risk_calculation:
                     with st.spinner("Calculating comprehensive risk metrics..."):
                         try:
                             # Calculate risk metrics using utils functions
@@ -1315,8 +1345,8 @@ def main():
                             
                             if not risk_df.empty:
                                 st.session_state['risk_df'] = risk_df
-                                st.session_state['risk_metrics_calculated'] = True
                                 st.session_state['var_level'] = var_level
+                                st.success(f"✅ Risk metrics calculated at {(1-var_level)*100:.0f}% confidence level")
                         
                         except Exception as e:
                             st.error(f"Error calculating risk metrics: {str(e)}")
@@ -1324,9 +1354,7 @@ def main():
                 # Display risk metrics if available
                 if 'risk_df' in st.session_state and not st.session_state['risk_df'].empty:
                     risk_df = st.session_state['risk_df']
-                    var_level = st.session_state.get('var_level', 0.05)
-                    
-                    st.success(f"✅ Risk metrics calculated at {(1-var_level)*100:.0f}% confidence level")
+                    current_var_level = st.session_state.get('var_level', 0.05)
                     
                     # Key Risk Indicators
                     st.subheader("🚨 Key Risk Indicators")
@@ -1337,7 +1365,7 @@ def main():
                     for i, (asset, row) in enumerate(risk_df.iterrows()):
                         with cols[i % 4]:
                             max_dd = row.get('Max Drawdown', 0)
-                            var_value = row.get(f'VaR ({var_level})', 0)
+                            var_value = row.get(f'VaR ({current_var_level})', 0)
                             
                             st.metric(
                                 label=f"{asset}",
@@ -1358,7 +1386,7 @@ def main():
                     display_risk_df = risk_df.copy()
                     
                     # Format percentage columns
-                    percentage_cols = [f'VaR ({var_level})', f'CVaR ({var_level})', 'Max Drawdown', 'Min', 'Max']
+                    percentage_cols = [f'VaR ({current_var_level})', f'CVaR ({current_var_level})', 'Max Drawdown', 'Min', 'Max']
                     for col in percentage_cols:
                         if col in display_risk_df.columns:
                             display_risk_df[col] = display_risk_df[col].apply(lambda x: f"{x:.2%}" if pd.notnull(x) else "N/A")
@@ -1422,7 +1450,7 @@ def main():
                         
                         for col in returns.columns:
                             col_returns = returns[col].dropna()
-                            var_cutoff = col_returns.quantile(var_level)
+                            var_cutoff = col_returns.quantile(current_var_level)
                             
                             # Create histogram
                             fig_var.add_trace(go.Histogram(
@@ -1441,7 +1469,7 @@ def main():
                             )
                         
                         fig_var.update_layout(
-                            title=f"Return Distribution with {(1-var_level)*100:.0f}% VaR",
+                            title=f"Return Distribution with {(1-current_var_level)*100:.0f}% VaR",
                             xaxis_title="Daily Return (%)",
                             yaxis_title="Frequency",
                             height=400
@@ -1610,19 +1638,40 @@ def main():
                         "Analysis Period",
                         options=['1 Year', '2 Years', '3 Years', '5 Years', 'All Data'],
                         index=2,
-                        help="Select time period for CAPM analysis"
-                    )                        # Convert period to days
-                    period_mapping = {
-                        '1 Year': 252,
-                        '2 Years': 504, 
-                        '3 Years': 756,
-                        '5 Years': 1260,
-                        'All Data': max_lookback
-                    }
-                    analysis_days = min(period_mapping[capm_period], max_lookback)
-                    
-                    # Run CAPM analysis button
-                if st.button("🔍 Run CAPM Analysis", type="primary"):
+                        help="Select time period for CAPM analysis",
+                        key="capm_period_selection"
+                    )
+                
+                # Convert period to days
+                period_mapping = {
+                    '1 Year': 252,
+                    '2 Years': 504, 
+                    '3 Years': 756,
+                    '5 Years': 1260,
+                    'All Data': max_lookback
+                }
+                analysis_days = min(period_mapping[capm_period], max_lookback)
+                
+                # Manual CAPM calculation button
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.write("")  # Empty space
+                with col2:
+                    manual_calculate_capm = st.button("🔍 Run CAPM Analysis", type="primary")
+                with col3:
+                    st.write("")  # Empty space
+                
+                # Trigger calculation either manually or automatically
+                trigger_capm_calculation = (
+                    manual_calculate_capm or
+                    st.session_state.get('auto_calculate', False) or
+                    'capm_analysis' not in st.session_state or
+                    st.session_state.get('capm_market_ticker') != market_ticker or
+                    st.session_state.get('capm_rf_tenor') != rf_tenor or
+                    st.session_state.get('caamp_period') != capm_period
+                )
+                
+                if trigger_capm_calculation:
                     
                     with st.spinner("Fetching market data and calculating CAPM metrics..."):
                         
@@ -1931,7 +1980,8 @@ def main():
                             "Correlation Method:",
                             options=["pearson", "spearman", "kendall"],
                             index=0,
-                            help="Pearson: Linear relationships, Spearman: Monotonic relationships, Kendall: Non-parametric"
+                            help="Pearson: Linear relationships, Spearman: Monotonic relationships, Kendall: Non-parametric",
+                            key="correlation_method_selection"
                         )
                     
                     with col2:
@@ -1940,13 +1990,23 @@ def main():
                             min_value=10,
                             max_value=min(252, len(returns)),
                             value=30,
-                            help="Window size for rolling correlation calculation"
+                            help="Window size for rolling correlation calculation",
+                            key="rolling_window_selection"
                         )
                     
                     with col3:
-                        calculate_corr = st.button("📊 Calculate Correlations", type="primary")
+                        manual_calculate_corr = st.button("📊 Calculate Correlations", type="primary")
                     
-                    if calculate_corr or 'correlation_calculated' not in st.session_state:
+                    # Trigger calculation either manually or automatically
+                    trigger_corr_calculation = (
+                        manual_calculate_corr or
+                        st.session_state.get('auto_calculate', False) or
+                        'corr_matrix' not in st.session_state or
+                        st.session_state.get('corr_method') != correlation_method or
+                        st.session_state.get('rolling_window') != rolling_window
+                    )
+                    
+                    if trigger_corr_calculation:
                         with st.spinner("Calculating correlation analysis..."):
                             try:
                                 # Calculate correlation matrix
@@ -1962,8 +2022,9 @@ def main():
                                 st.session_state['corr_matrix'] = corr_matrix
                                 st.session_state['rolling_data'] = rolling_data
                                 st.session_state['div_metrics'] = div_metrics
-                                st.session_state['correlation_calculated'] = True
                                 st.session_state['corr_method'] = correlation_method
+                                st.session_state['rolling_window'] = rolling_window
+                                st.success(f"✅ Correlation analysis completed using {correlation_method} method")
                                 
                             except Exception as e:
                                 st.error(f"Error calculating correlations: {str(e)}")
@@ -2318,6 +2379,10 @@ def main():
             st.write("🔲 Portfolio constraints (coming soon)")
         else:
             st.warning("📝 **Note:** Portfolio optimization requires multiple assets. Please select multiple tickers.")
+    
+    # Reset auto-calculate flag after all tabs have been processed
+    if 'auto_calculate' in st.session_state:
+        st.session_state['auto_calculate'] = False
 
 if __name__ == "__main__":
     main()
