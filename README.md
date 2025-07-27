@@ -5,7 +5,7 @@ A comprehensive Streamlit-based portfolio analysis tool that provides real-time 
 ## Features
 
 ### 🚀 Core Functionality
-- **Dynamic Ticker Input**: Multiple input methods including single ticker, multiple tickers, and CSV upload
+- **Dynamic Ticker Input**: Multiple input methods including manual entry and categorized asset browsing
 - **Real-time Data Fetching**: Cached data retrieval using Yahoo Finance API
 - **Interactive Visualizations**: Price charts, candlestick charts, and performance metrics
 - **Comprehensive Analytics**: Risk metrics, return analysis, and portfolio optimization
@@ -28,8 +28,8 @@ A comprehensive Streamlit-based portfolio analysis tool that provides real-time 
 
 1. **Clone the repository:**
 ```bash
-git clone <repository-url>
-cd portfolio-analyzer
+git clone git@github.com:daviddagyei/FinOptimize.git
+cd FinOptimize
 ```
 
 2. **Install dependencies:**
@@ -47,36 +47,29 @@ streamlit run app.py
 ### Getting Started
 1. **Open the application** in your browser (typically `http://localhost:8501`)
 2. **Select ticker input method** from the sidebar:
-   - Single Ticker: Enter one stock symbol
-   - Multiple Tickers: Enter multiple symbols (one per line)
-   - Upload CSV: Upload a file with ticker symbols
+   - Manual Entry: Enter tickers directly (comma-separated or one per line)
+   - Browse Categories: Choose from predefined asset categories (US Stocks, ETFs, Crypto, etc.)
 3. **Choose date range** using preset options or custom dates
 4. **Select data type** (Close, Adj Close, OHLC, All)
 
 ### Input Methods
 
-#### Single Ticker
+#### Manual Entry
 ```python
-# Example: Enter "AAPL" for Apple Inc.
-ticker_input = st.sidebar.text_input("Enter Ticker Symbol:", value="AAPL")
+# Example: Enter "AAPL, MSFT, GOOGL" or one per line
+# AAPL
+# MSFT
+# GOOGL
+# TSLA
 ```
 
-#### Multiple Tickers
-```
-AAPL
-MSFT
-GOOGL
-TSLA
-```
-
-#### CSV Upload
-CSV file should contain a column named 'ticker' or 'symbol':
-```csv
-ticker
-AAPL
-MSFT
-GOOGL
-```
+#### Browse Categories
+Choose from predefined categories:
+- **US Stocks**: Large-cap technology, financial, healthcare companies
+- **ETFs**: Broad market, sector-specific, and international ETFs
+- **Crypto**: Major cryptocurrencies (BTC, ETH, etc.)
+- **Commodities**: Gold, silver, oil, and other commodities
+- **International**: Global markets and foreign exchanges
 
 ### Data Fetching Functions
 
@@ -108,11 +101,14 @@ def fetch_multiple_tickers(tickers: List[str], start_date: str, end_date: str):
 
 ### File Structure
 ```
-portfolio-analyzer/
+FinOptimize/
 ├── app.py              # Main Streamlit application
 ├── utils.py            # Financial analysis utility functions
 ├── requirements.txt    # Python dependencies
-└── README.md          # This file
+├── run_app.sh         # Shell script to run the application
+├── README.md          # This file
+├── RETURN_METRICS_GUIDE.md  # Detailed guide on return and risk metrics
+└── questions.json     # Sample analysis questions and use cases
 ```
 
 ### Key Components
@@ -129,10 +125,30 @@ portfolio-analyzer/
 
 #### Analysis Engine
 - **Utility Functions**: Comprehensive set of financial analysis functions
-- **Performance Metrics**: Risk-adjusted returns and portfolio analytics
+- **Performance Metrics**: Risk-adjusted returns and portfolio analytics  
 - **Optimization Tools**: Mean-variance optimization and portfolio construction
+- **CAPM Analysis**: Beta calculation, alpha generation, and Security Market Line
+- **Correlation Analysis**: Rolling correlations and diversification metrics
 
 ## Advanced Features
+
+### Categorized Asset Selection
+FinOptimize includes pre-categorized asset lists covering:
+- **500+ Pre-defined Assets**: Stocks, ETFs, cryptocurrencies, and commodities
+- **Smart Categorization**: Assets organized by sector, geography, and asset class
+- **Quick Selection**: Browse categories or use manual entry for maximum flexibility
+
+### Portfolio Optimization
+- **Efficient Frontier**: Complete "C" shaped curve showing all possible portfolios
+- **Tangency Portfolio**: Maximum Sharpe ratio optimization
+- **Global Minimum Variance**: Lowest risk portfolio construction
+- **Risk-Return Analysis**: Comprehensive portfolio comparison tools
+
+### CAPM Analysis
+- **Beta Calculation**: Systematic risk measurement against market benchmarks
+- **Alpha Generation**: Excess return analysis and Jensen's alpha
+- **Security Market Line**: Visual representation of risk-return relationship
+- **Multi-asset Comparison**: Side-by-side CAPM metrics comparison
 
 ### Caching Implementation
 ```python
@@ -192,7 +208,7 @@ def calculate_moving_averages(data, windows=[20, 50, 200]):
 
 ## Contributing
 
-1. Fork the repository
+1. Fork the repository: `git@github.com:daviddagyei/FinOptimize.git`
 2. Create a feature branch
 3. Implement your changes
 4. Add tests if applicable
@@ -204,8 +220,8 @@ This project is open source and available under the MIT License.
 
 ## Support
 
-For questions or issues, please open an issue in the repository or contact the development team.
+For questions or issues, please open an issue in the GitHub repository at `git@github.com:daviddagyei/FinOptimize.git` or contact the development team.
 
 ---
 
-**Note**: This application is for educational and research purposes. Always verify financial calculations and consult with financial professionals for investment decisions.
+**Note**: FinOptimize is designed for educational and research purposes. Always verify financial calculations and consult with financial professionals for investment decisions.
