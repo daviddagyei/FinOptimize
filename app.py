@@ -12,7 +12,7 @@ from utils import calc_tangency_portfolio, calc_gmv_portfolio, calc_mv_portfolio
 
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Portfolio Analyzer",
+    page_title="FinOptimize",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1884,7 +1884,7 @@ def main():
     Main Streamlit application.
     """
     # App title
-    st.title("📈 Portfolio Analyzer")
+    st.title("📈 FinOptimize")
     st.markdown("*Comprehensive portfolio analysis tool with real-time data*")
     
     # Sidebar inputs

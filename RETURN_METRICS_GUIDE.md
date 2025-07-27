@@ -1,4 +1,4 @@
-# Portfolio Analyzer - Return and Risk Metrics Implementation
+# FinOptimize - Return and Risk Metrics Implementation
 
 ## 🎯 Overview
 

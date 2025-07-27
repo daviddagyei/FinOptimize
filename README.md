@@ -1,4 +1,4 @@
-# Portfolio Analyzer
+# FinOptimize
 
 A comprehensive Streamlit-based portfolio analysis tool that provides real-time financial data fetching, advanced analytics, and interactive visualizations for investment portfolio management.
 
